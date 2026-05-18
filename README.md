@@ -2,21 +2,29 @@
 
 🇯🇵 [日本語ドキュメント](./docs/README.ja.md) | 💬 [Discord Community](https://discord.gg/R2Xz3uYWxD)
 
-**T**AKT **A**gent **K**oordination **T**opology — Give your AI coding agents structured review loops, managed prompts, and guardrails — so they deliver quality code, not just code.
+**T**AKT **A**gent **K**oordination **T**opology — Orchestrate multiple AI agents with structured review loops, managed prompts, and guardrails.
 
-TAKT runs AI agents (Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI) through YAML-defined workflows with built-in review cycles. You talk to AI to define what you want, queue tasks, and let TAKT handle the execution — planning, implementation, multi-stage review, and fix loops — all governed by declarative workflow files.
+Talk to AI to define what you want, queue it as a task, and run it with `takt run`. Planning, implementation, review, and fix loops are defined in YAML workflow files, so the process is not left to the agent's discretion. TAKT coordinates Claude Code, Codex, OpenCode, Cursor, and GitHub Copilot CLI as agents with different roles, permissions, and context.
+
+TAKT is built primarily for AI coding workflows, but the same model applies beyond coding: any task where multiple AI agents need to coordinate, or where review, judgment, and feedback loops can improve task quality.
 
 TAKT is built with TAKT itself (dogfooding).
 
 ## Why TAKT
 
-**Batteries included** — Architecture, security, and AI antipattern review criteria are built in. Ship code that meets a quality bar from day one.
+AI coding agents are powerful, but they do not automatically create a stable development process. In long-running work, they forget instructions, accumulate polluted context, blur implementation and review responsibilities, and often force humans to repeat the same feedback again and again. That wears people down.
 
-**Practical** — A tool for daily development, not demos. Talk to AI to refine requirements, queue tasks, and run them. Worktree isolation on task execution, PR creation, and retry on failure.
+Adding more rules to prompts, `CLAUDE.md`, or skills can help, but it cannot enforce the process. Whether the rules are followed is still left to the agent's behavior.
 
-**Reproducible** — Execution paths are declared in YAML, keeping results consistent. Workflows are shareable — a workflow built by one team member can be used by anyone else to run the same quality process. Every step is logged in NDJSON for full traceability from task to PR.
+TAKT treats AI agents as something to be controlled from the outside, not simply trusted.
 
-**Multi-agent** — Orchestrate multiple agents with different personas, permissions, and review criteria. Run parallel reviewers, route failures back to implementers, aggregate results with declarative rules. Prompts are managed as independent facets (persona, policy, knowledge, instruction) that compose freely across workflows ([Faceted Prompting](./docs/faceted-prompting.md)).
+Workflows define the phases, and each step receives its own persona, policy, knowledge, instruction, and output contract. TAKT manages implementation, review, fix, and re-review flows declaratively. By separating responsibilities, knowledge, and constraints, then giving each agent only what it needs for the current step, TAKT improves task quality without bloating context.
+
+Reviews cannot be silently skipped. Findings route work back to fix steps, and human judgment can be requested when needed. Tasks run in isolated worktrees, and each step leaves logs and reports so the path from task to PR remains traceable.
+
+At its core, TAKT runs reusable agent processes built from roles, phases, judgments, and feedback loops.
+
+The goal is simple: make development processes reusable, reviewable, and reproducible without depending on constant human intervention.
 
 ## Requirements
 
@@ -272,6 +280,7 @@ See [External Integrations](./docs/external-integrations.md) for other community
 |----------|-------------|
 | [CLI Reference](./docs/cli-reference.md) | All commands and options |
 | [Configuration](./docs/configuration.md) | Global and project settings |
+| [Design Philosophy](./docs/design-philosophy.md) | Why TAKT is built around workflows, facets, feedback loops, and traceability |
 | [Workflow Guide](./docs/workflows.md) | Creating and customizing workflows |
 | [Builtin Catalog](./docs/builtin-catalog.md) | All builtin workflows and personas |
 | [Faceted Prompting](./docs/faceted-prompting.md) | Prompt design methodology |
