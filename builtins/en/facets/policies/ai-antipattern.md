@@ -144,9 +144,28 @@ AI tends to over-deliver. Check for unnecessary additions.
 | Premature abstraction | Interfaces/abstractions for single implementations |
 | Over-configuration | Making things configurable that don't need to be |
 | Gold-plating | "Nice-to-have" additions not asked for |
+| Incidental observable contract changes | Changing values observed by users or tests without being asked |
 | Unnecessary legacy support | Adding mapping/normalization logic for old values without explicit instruction |
 
 The best code is the minimum code that solves the problem.
+
+### Incidental Observable Contract Changes
+
+AI often changes existing contracts under the banner of "improvement", "standardization", or "clarity" even when the task does not require it. UI copy, accessible names, event names, return values, error messages, log formats, public APIs, and behavior asserted by tests are observable contracts.
+
+| Pattern | Verdict |
+|---------|---------|
+| Contract change unrelated to the request | REJECT |
+| Tests are updated only to follow the new contract | REJECT |
+| New contract required by new functionality | OK |
+| Missing information is added while preserving the existing contract | OK |
+| Reason, impact scope, and migration path for the contract change are explicit | OK |
+
+Verification approach:
+1. Inspect changed strings, attributes, event names, return values, error messages, and log formats in the diff
+2. Check whether each one is directly required by the task
+3. If test expectations merely follow implementation changes, check whether the original contract can be preserved
+4. If the contract change is necessary, verify that reason and impact scope are explained
 
 Legacy support criteria:
 - Unless explicitly instructed to "support legacy values" or "maintain backward compatibility", legacy support is unnecessary
