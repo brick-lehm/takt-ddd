@@ -61,7 +61,7 @@ Not blocking, but improvement is recommended.
 - Insufficient edge case / boundary value tests
 - Tests coupled to implementation details
 - Overly complex functions/files
-- Unclear naming
+- Naming diverges from reality
 - TODO/FIXME with issue number, external blocker, and removal condition
 - `@ts-ignore` or `eslint-disable` without justification
 
