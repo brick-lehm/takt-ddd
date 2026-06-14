@@ -11,7 +11,7 @@ Define the shared judgment criteria and behavioral principles for all reviewers.
 | Fact-check | Verify against actual code before raising issues. Do not speculate |
 | Practical fixes | Propose implementable solutions, not theoretical ideals |
 | State consistency | For side effects and state changes, verify that success, failure, and interruption paths have no missing, duplicated, or inconsistent effects |
-| Contract consistency | Verify that contracts carried by consolidation or abstraction are applied to existing equivalent branches by the same standard |
+| Contract coverage | Verify new contracts across normal entries, derived conditions, validation, evaluation, output, and re-injection paths |
 | Behavior evidence | Verify what behavior the tests or logs prove, not merely that they exist |
 | Boy Scout | Have problems fixed within the task scope when they are in changed code or in areas directly affecting correctness, contracts, or wiring of the change |
 
@@ -49,7 +49,7 @@ REJECT without exception if any of the following apply.
 - Internal implementation exported from public API (infrastructure functions or internal classes exposed publicly)
 - Replaced code/exports surviving after refactoring
 - Missing cross-validation of related fields (invariants of semantically coupled config values left unverified)
-- Missing caller, producer, or test data updates after a contract change
+- Missing caller, producer, consumer, validator, test data, or derived-entry updates after a contract change
 - Existing branches with the same contract remain on the old implementation after adding or changing a shared helper, normalizer, builder, or adapter
 - Missing, duplicated, or incorrectly ordered effects in side-effect or state-change paths
 - Sensitive data exposed in logs, error responses, or test output
@@ -249,14 +249,16 @@ The review target is the entire cumulative diff from the task's starting point (
 - Do not dismiss intentional decisions as false positives just because they were recorded. Evaluate validity against `order.md` / `plan.md` / actual code
 - If the design decision itself is flawed, raise it
 
-### Abstraction and Contract Consistency
+### Full Entry Review for Contract Additions and Changes
 
-When the diff adds or changes a shared helper, normalizer, builder, adapter, or state-transition function, identify the contract that abstraction carries and reconcile it against existing equivalent branches.
+When the diff adds or changes a contract such as a config value, state, condition expression, file format, event, builder, adapter, or state-transition function, enumerate and reconcile every entry, exit, and re-injection path that can carry that contract.
 
-- List the inputs, outputs, side effects, events, logs, error categories, return values, and cleanup behavior that the function standardizes
+- Verify that definition, production, normalization, validation, evaluation, persistence, output, and event emission all apply the same contract
+- Check derived paths as well as the normal entry: derived conditions, aggregate conditions, parent/child workflows, loop decisions, early exits, and exception paths
+- When persisted data or externally supplied data is re-injected into JSON, Markdown, logs, events, or later instructions, include escaping, boundary handling, and failure behavior in the contract
 - Search for existing returns, throws, catches, early returns, branches, and call sites with the same responsibility
 - If an existing branch does not satisfy the new contract, treat it as related code even if the code itself predates the change
-- If tests cover only the new abstraction path and do not verify the contract on existing equivalent branches, treat it as a coverage gap
+- If tests cover only the new path and do not verify existing equivalent branches or derived entries, treat it as a coverage gap
 - "Not explicitly stated in the task requirements" is not a valid reason to mark a contract inconsistency introduced by the diff as non-blocking
 
 ### Reviewing Side Effects and State Transitions
