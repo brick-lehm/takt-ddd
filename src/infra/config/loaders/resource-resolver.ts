@@ -1,15 +1,7 @@
-/**
- * Resource resolution helpers for workflow YAML parsing.
- *
- * Facade: delegates to the faceted-prompting package and re-exports
- * its types/functions. resolveFacetPath and resolveFacetByName build
- * TAKT-specific candidate directories then delegate to the generic
- * implementation.
- */
-
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import type { FacetType } from '../paths.js';
+import { getProjectFacetDir, getRepertoireFacetDir, type FacetType } from '../paths.js';
+import { assertPathSegmentsAreSafe } from '../../../shared/utils/pathBoundary.js';
 import {
   resolveFacetPath as resolveFacetPathGeneric,
   resolvePersona as resolvePersonaGeneric,
@@ -24,6 +16,8 @@ import {
 } from './workflowPersonaPathPolicy.js';
 import {
   buildCandidateDirsWithPackage,
+  getPackageFromWorkflowDir,
+  getWorkflowBaseDir,
   type FacetResolutionContext,
 } from './workflowPackageScope.js';
 
@@ -79,6 +73,11 @@ function isPathInside(basePath: string, targetPath: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
+function isPathInsideOrSame(basePath: string, targetPath: string): boolean {
+  const rel = relative(resolve(basePath), resolve(targetPath));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 function contentSourceLabel(content: ResolvedFacetContent): string {
   return content.sourcePath ?? content.refName ?? '<inline>';
 }
@@ -122,6 +121,7 @@ export function resolveResourceContentWithSource(
   workflowDir: string,
   facetType?: FacetType,
   refName?: string,
+  context?: FacetResolutionContext,
 ): ResolvedFacetContent | undefined {
   if (spec == null) {
     return undefined;
@@ -130,7 +130,7 @@ export function resolveResourceContentWithSource(
     const resolved = resolveResourcePath(spec, workflowDir);
     if (existsSync(resolved)) {
       return {
-        content: readFileSync(resolved, 'utf-8'),
+        content: readResourceFile(resolved, facetType, workflowDir, context),
         sourcePath: resolved,
         facetType,
         refName,
@@ -144,13 +144,14 @@ export function resolveSectionMapWithSource(
   raw: Record<string, string> | undefined,
   workflowDir: string,
   facetType: FacetType,
+  context?: FacetResolutionContext,
 ): ResolvedSectionMap | undefined {
   if (!raw) {
     return undefined;
   }
   const resolved: ResolvedSectionMap = {};
   for (const [name, value] of Object.entries(raw)) {
-    const content = resolveResourceContentWithSource(value, workflowDir, facetType, name);
+    const content = resolveResourceContentWithSource(value, workflowDir, facetType, name, context);
     if (content?.content) {
       resolved[name] = content;
     }
@@ -207,11 +208,160 @@ function findSourceLayerIndex(sourcePath: string, candidateDirs: readonly string
   return index >= 0 ? index : undefined;
 }
 
+function isProjectFacetFile(
+  filePath: string,
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): boolean {
+  if (!context?.projectDir) {
+    return false;
+  }
+  return isPathInside(getProjectFacetDir(context.projectDir, facetType), filePath);
+}
+
+function getPackageFacetDir(
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): string | undefined {
+  if (!context?.workflowDir || !context.repertoireDir) {
+    return undefined;
+  }
+  const pkg = getPackageFromWorkflowDir(getWorkflowBaseDir(context.workflowDir), context.repertoireDir);
+  return pkg
+    ? getRepertoireFacetDir(pkg.owner, pkg.repo, facetType, context.repertoireDir)
+    : undefined;
+}
+
+function isPackageFacetFile(
+  filePath: string,
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): boolean {
+  const packageFacetDir = getPackageFacetDir(facetType, context);
+  return packageFacetDir !== undefined && isPathInside(packageFacetDir, filePath);
+}
+
+function assertProjectFacetFileIsSafe(
+  filePath: string,
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): void {
+  const projectDir = context?.projectDir;
+  if (!projectDir || !isProjectFacetFile(filePath, facetType, context)) {
+    return;
+  }
+
+  assertPathSegmentsAreSafe(
+    projectDir,
+    filePath,
+    (_violation, segmentPath) => new Error(`Project facet file must stay inside the project and must not use symlinks: ${segmentPath}`),
+  );
+
+  const stats = lstatSync(filePath);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(`Project facet file must be a regular file and must not be a symlink: ${filePath}`);
+  }
+
+  const resolvedProjectDir = realpathSync(projectDir);
+  const facetDir = realpathSync(getProjectFacetDir(projectDir, facetType));
+  const realFilePath = realpathSync(filePath);
+  if (!isPathInsideOrSame(resolvedProjectDir, facetDir) || !isPathInside(facetDir, realFilePath)) {
+    throw new Error(`Project facet file must stay inside the project and must not use symlinks: ${filePath}`);
+  }
+}
+
+function assertScopedFacetFileIsSafe(
+  filePath: string,
+  context: FacetResolutionContext | undefined,
+): void {
+  const repertoireDir = context?.repertoireDir;
+  if (!repertoireDir) {
+    return;
+  }
+
+  const stats = assertPathSegmentsAreSafe(
+    repertoireDir,
+    filePath,
+    (_violation, segmentPath) => new Error(`Scoped facet file must stay inside the repertoire and must not use symlinks: ${segmentPath}`),
+  );
+  if (!stats) {
+    throw new Error(`Scoped facet file not found: ${filePath}`);
+  }
+  if (!stats.isFile()) {
+    throw new Error(`Scoped facet file must be a regular file and must not be a symlink: ${filePath}`);
+  }
+
+  const resolvedRepertoireDir = realpathSync(repertoireDir);
+  const realFilePath = realpathSync(filePath);
+  if (!isPathInside(resolvedRepertoireDir, realFilePath)) {
+    throw new Error(`Scoped facet file must stay inside the repertoire and must not use symlinks: ${filePath}`);
+  }
+}
+
+function assertFacetFileIsSafe(
+  filePath: string,
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): void {
+  if (isPackageFacetFile(filePath, facetType, context)) {
+    assertScopedFacetFileIsSafe(filePath, context);
+    return;
+  }
+  assertProjectFacetFileIsSafe(filePath, facetType, context);
+}
+
+function readFacetFile(
+  filePath: string,
+  facetType: FacetType,
+  context: FacetResolutionContext | undefined,
+): string {
+  assertFacetFileIsSafe(filePath, facetType, context);
+  return readFileSync(filePath, 'utf-8');
+}
+
+function readScopedFacetFile(
+  filePath: string,
+  context: FacetResolutionContext,
+): string {
+  assertScopedFacetFileIsSafe(filePath, context);
+  return readFileSync(filePath, 'utf-8');
+}
+
+function readResourceFile(
+  filePath: string,
+  facetType: FacetType | undefined,
+  workflowDir: string,
+  context: FacetResolutionContext | undefined,
+): string {
+  if (facetType === undefined) {
+    const stats = assertPathSegmentsAreSafe(
+      workflowDir,
+      filePath,
+      (_violation, segmentPath) => new Error(`Workflow resource file must stay inside the workflow directory and must not use symlinks: ${segmentPath}`),
+    );
+    if (!stats) {
+      throw new Error(`Workflow resource file not found: ${filePath}`);
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Workflow resource file must be a regular file and must not be a symlink: ${filePath}`);
+    }
+
+    const resolvedWorkflowDir = realpathSync(workflowDir);
+    const realFilePath = realpathSync(filePath);
+    if (!isPathInside(resolvedWorkflowDir, realFilePath)) {
+      throw new Error(`Workflow resource file must stay inside the workflow directory and must not use symlinks: ${filePath}`);
+    }
+    return readFileSync(filePath, 'utf-8');
+  }
+  return readFacetFile(filePath, facetType, context);
+}
+
 function resolveFacetFromCandidateDirs(
   name: string,
   facetType: FacetType,
   candidateDirs: readonly string[],
   refName: string,
+  context?: FacetResolutionContext,
   excludeSourcePath?: string,
 ): ResolvedFacetContent | undefined {
   for (const dir of candidateDirs) {
@@ -221,7 +371,7 @@ function resolveFacetFromCandidateDirs(
     }
     if (existsSync(filePath)) {
       return {
-        content: readFileSync(filePath, 'utf-8'),
+        content: readFacetFile(filePath, facetType, context),
         sourcePath: filePath,
         facetType,
         refName,
@@ -244,7 +394,7 @@ function resolveParentFacetWithSource(
   const candidateDirs = buildCandidateDirsWithPackage(facetType, context);
   const sourceLayerIndex = findSourceLayerIndex(currentSourcePath, candidateDirs);
   const searchDirs = candidateDirs.slice(sourceLayerIndex ?? 0);
-  return resolveFacetFromCandidateDirs(parentName, facetType, searchDirs, parentName, currentSourcePath);
+  return resolveFacetFromCandidateDirs(parentName, facetType, searchDirs, parentName, context, currentSourcePath);
 }
 
 function expandFacetInheritance(
@@ -286,13 +436,6 @@ function expandFacetInheritance(
   };
 }
 
-/**
- * Resolve a facet name to its file path via 4-layer lookup (package-local → project → user → builtin).
- *
- * Handles @{owner}/{repo}/{facet-name} scope references directly when repertoireDir is provided.
- *
- * @returns Absolute file path if found, undefined otherwise.
- */
 export function resolveFacetPath(
   name: string,
   facetType: FacetType,
@@ -301,18 +444,19 @@ export function resolveFacetPath(
   if (isScopeRef(name) && context.repertoireDir) {
     const scopeRef = parseScopeRef(name);
     const filePath = resolveScopeRef(scopeRef, facetType, context.repertoireDir);
-    return existsSync(filePath) ? filePath : undefined;
+    if (!existsSync(filePath)) {
+      return undefined;
+    }
+    assertScopedFacetFileIsSafe(filePath, context);
+    return filePath;
   }
-  return resolveFacetPathGeneric(name, buildCandidateDirsWithPackage(facetType, context));
+  const filePath = resolveFacetPathGeneric(name, buildCandidateDirsWithPackage(facetType, context));
+  if (filePath) {
+    assertFacetFileIsSafe(filePath, facetType, context);
+  }
+  return filePath;
 }
 
-/**
- * Resolve a facet name to its file content via 4-layer lookup.
- *
- * Handles @{owner}/{repo}/{facet-name} scope references when repertoireDir is provided.
- *
- * @returns File content if found, undefined otherwise.
- */
 export function resolveFacetByName(
   name: string,
   facetType: FacetType,
@@ -330,7 +474,7 @@ export function resolveFacetByNameWithSource(
   if (filePath) {
     return expandFacetInheritance(
       {
-        content: readFileSync(filePath, 'utf-8'),
+        content: readFacetFile(filePath, facetType, context),
         sourcePath: filePath,
         facetType,
         refName: name,
@@ -342,12 +486,6 @@ export function resolveFacetByNameWithSource(
   return undefined;
 }
 
-/**
- * Resolve a section reference to content.
- * Looks up ref in resolvedMap first, then falls back to path resolution.
- * If a FacetResolutionContext is provided and ref is a name (not a path),
- * falls back to 4-layer facet resolution (including package-local and @scope).
- */
 export function resolveRefToContent(
   ref: string,
   resolvedMap: ResolvedMapInput | undefined,
@@ -375,7 +513,7 @@ export function resolveRefToContentWithSource(
     const filePath = resolveScopeRef(scopeRef, facetType, context.repertoireDir);
     return existsSync(filePath)
       ? expandFacetInheritance({
-          content: readFileSync(filePath, 'utf-8'),
+          content: readScopedFacetFile(filePath, context),
           sourcePath: filePath,
           facetType,
           refName: ref,
@@ -384,7 +522,7 @@ export function resolveRefToContentWithSource(
   }
 
   if (isResourcePath(ref)) {
-    const resource = resolveResourceContentWithSource(ref, workflowDir, facetType, ref);
+    const resource = resolveResourceContentWithSource(ref, workflowDir, facetType, ref, context);
     return resource ? expandFacetInheritance(resource, facetType, context) : undefined;
   }
 
@@ -392,17 +530,16 @@ export function resolveRefToContentWithSource(
     ? buildCandidateDirsWithPackage(facetType, context)
     : undefined;
   if (candidateDirs) {
-    const facetContent = resolveFacetFromCandidateDirs(ref, facetType!, candidateDirs, ref);
+    const facetContent = resolveFacetFromCandidateDirs(ref, facetType!, candidateDirs, ref, context);
     if (facetContent !== undefined) {
       return expandFacetInheritance(facetContent, facetType, context);
     }
   }
 
-  const resource = resolveResourceContentWithSource(ref, workflowDir, facetType, ref);
+  const resource = resolveResourceContentWithSource(ref, workflowDir, facetType, ref, context);
   return resource ? expandFacetInheritance(resource, facetType, context) : undefined;
 }
 
-/** Resolve multiple references to content strings (for fields that accept string | string[]). */
 export function resolveRefList(
   refs: string | string[] | undefined,
   resolvedMap: ResolvedMapInput | undefined,
@@ -420,7 +557,6 @@ export function resolveRefList(
   return contents.length > 0 ? contents : undefined;
 }
 
-/** Resolve persona from YAML field to spec + absolute path. */
 export function resolvePersona(
   rawPersona: string | undefined,
   sections: WorkflowSections,
@@ -431,6 +567,7 @@ export function resolvePersona(
     const scopeRef = parseScopeRef(rawPersona);
     const personaPath = resolveScopeRef(scopeRef, 'personas', context.repertoireDir);
     if (existsSync(personaPath)) {
+      assertScopedFacetFileIsSafe(personaPath, context);
       assertAllowedPersonaPath(personaPath, context);
       return { personaSpec: rawPersona, personaPath };
     }
@@ -441,6 +578,7 @@ export function resolvePersona(
     : undefined;
   const resolved = resolvePersonaGeneric(rawPersona, sections, workflowDir, candidateDirs);
   if (resolved.personaPath) {
+    assertFacetFileIsSafe(resolved.personaPath, 'personas', context);
     assertAllowedPersonaPath(resolved.personaPath, context);
   }
   return resolved;

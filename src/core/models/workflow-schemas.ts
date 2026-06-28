@@ -205,6 +205,7 @@ export const TeamLeaderConfigRawSchema = z.object({
 /** Sub-step schema for parallel execution */
 export const ParallelSubStepRawSchema = z.object({
   name: z.string().min(1),
+  session_key: z.string().trim().min(1).optional(),
   persona: z.string().optional(),
   persona_name: z.string().optional(),
   tags: z.array(z.string().min(1)).optional(),
@@ -214,12 +215,13 @@ export const ParallelSubStepRawSchema = z.object({
   allowed_tools: z.never().optional(),
   mcp_servers: McpServersSchema,
   provider: ProviderReferenceSchema.optional(),
-  model: z.string().optional(),
+  model: z.string().nullable().optional(),
   promotion: z.never().optional(),
   permission_mode: z.never().optional(),
   required_permission_mode: PermissionModeSchema.optional(),
   provider_options: WorkflowStepProviderOptionsSchema,
   edit: z.boolean().optional(),
+  requires_user_input: z.never().optional(),
   instruction: WorkflowFacetRefOrParamSchema.optional(),
   instruction_template: z.never().optional(),
   rules: z.array(WorkflowRuleSchema).optional(),
@@ -299,6 +301,7 @@ function createWorkflowStepRawSchema(options?: { relaxWorkflowCallConditions?: b
   return z.object({
     name: z.string().min(1),
     description: z.string().optional(),
+    session_key: z.string().trim().min(1).optional(),
     kind: WorkflowStepKindSchema.optional(),
     mode: z.literal('system').optional(),
     call: z.string().min(1).optional(),
@@ -314,12 +317,13 @@ function createWorkflowStepRawSchema(options?: { relaxWorkflowCallConditions?: b
     allowed_tools: z.never().optional(),
     mcp_servers: McpServersSchema,
     provider: ProviderReferenceSchema.optional(),
-    model: z.string().optional(),
+    model: z.string().nullable().optional(),
     promotion: z.array(WorkflowPromotionRawSchema).optional(),
     permission_mode: z.never().optional(),
     required_permission_mode: PermissionModeSchema.optional(),
     provider_options: WorkflowStepProviderOptionsSchema,
     edit: z.boolean().optional(),
+    requires_user_input: z.boolean().optional(),
     instruction: WorkflowFacetRefOrParamSchema.optional(),
     instruction_template: z.never().optional(),
     delay_before_ms: z.number().int().min(0).optional(),
@@ -350,6 +354,37 @@ function createWorkflowStepRawSchema(options?: { relaxWorkflowCallConditions?: b
     }
 
     const stepKind = getWorkflowStepKind(data);
+    if (data.session_key !== undefined && stepKind !== 'agent') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['session_key'],
+        message: 'session_key is only supported on agent steps, parallel sub-steps, and loop_monitors.judge',
+      });
+    }
+
+    if (data.session_key !== undefined && data.parallel !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['session_key'],
+        message: 'session_key is not supported on parallel parent steps; set it on each parallel sub-step',
+      });
+    }
+
+    if (data.requires_user_input !== undefined && stepKind !== 'agent') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requires_user_input'],
+        message: 'requires_user_input is only supported on agent steps',
+      });
+    }
+
+    if (data.requires_user_input !== undefined && data.parallel !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requires_user_input'],
+        message: 'requires_user_input is not supported on parallel parent steps',
+      });
+    }
 
     if (data.call !== undefined && stepKind !== 'workflow_call') {
       ctx.addIssue({
@@ -500,9 +535,11 @@ export const LoopMonitorRuleSchema = z.object({
 
 /** Loop monitor judge schema */
 export const LoopMonitorJudgeSchema = z.object({
+  session_key: z.string().trim().min(1).optional(),
   persona: z.string().optional(),
   provider: ProviderReferenceSchema.optional(),
-  model: z.string().min(1).optional(),
+  model: z.string().min(1).nullable().optional(),
+  provider_options: WorkflowStepProviderOptionsSchema,
   instruction: z.string().optional(),
   instruction_template: z.never().optional(),
   rules: z.array(LoopMonitorRuleSchema).min(1),

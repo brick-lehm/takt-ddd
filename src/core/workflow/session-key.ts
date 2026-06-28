@@ -15,8 +15,11 @@ import type { ProviderType } from '../../shared/types/provider.js';
 /**
  * Build a unique session key for a step.
  *
- * - Base key: `step.persona ?? step.name`
+ * - Base key: `step.sessionKey ?? step.persona ?? step.name`
  * - If the step specifies a provider, appends `:{provider}` to disambiguate
+ *
+ * sessionKey is validated at parse time by Zod (z.string().trim().min(1).optional()),
+ * so it is guaranteed to be a non-empty, trimmed string when present.
  *
  * Examples:
  *   - persona="coder", provider=undefined  → "coder"
@@ -25,7 +28,7 @@ import type { ProviderType } from '../../shared/types/provider.js';
  *   - persona=undefined, name="plan"       → "plan"
  */
 export function buildSessionKey(step: WorkflowStep, providerOverride?: ProviderType): string {
-  const base = step.persona ?? step.name;
+  const base = step.sessionKey ?? step.persona ?? step.name;
   const provider = providerOverride ?? step.provider;
   return provider ? `${base}:${provider}` : base;
 }

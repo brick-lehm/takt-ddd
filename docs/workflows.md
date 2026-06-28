@@ -55,6 +55,7 @@ report_formats:
 
 steps:
   - name: step-name
+    session_key: shared-coder        # Optional explicit session key for this step
     persona: coder                   # Persona key (references personas map)
     persona_name: coder              # Display name (optional, does not affect provider_routing.personas)
     tags: [implementation, edit]     # Provider routing tags (optional)
@@ -95,6 +96,8 @@ steps:
 Steps reference section maps by key name (e.g., `persona: coder`), not by file path. Paths in section maps are resolved relative to the workflow YAML file's directory.
 
 `persona_name` is only a display name. `provider_routing.personas` in config matches the raw `persona` key, while `provider_routing.tags` matches the optional `tags` array in the order written on the step. Later tags override earlier tags for the same provider/model/provider_options leaf.
+
+`session_key` is supported on normal agent steps, parallel sub-steps, and `loop_monitors.judge`. It is not supported on system steps, workflow-call steps, or parallel parent steps because those entries do not own an agent session. Use it when multiple agent steps share a persona but must keep separate sessions, or when different agent steps must intentionally share one session. The effective runtime key is `session_key` plus the resolved provider suffix, for example `shared-coder:claude`. When `session_key` is omitted, TAKT uses the persona key, or the step name when no persona is set. Empty strings and whitespace-only values are rejected during workflow validation.
 
 String `quality_gates` remain AI completion directives and are injected into agent step prompts. `type: command` gates run inside the worktree after an agent step completes and pass only when the command exits with code `0`. Workflow YAML command gates require `workflow_command_gates.custom_scripts: true` in config. On failure, TAKT feeds command metadata, cwd, exit code or timeout/output-limit details, the output log path, and bounded sanitized stdout/stderr back into the same agent step. Raw stdout and stderr are also written to the local output log. `system` and `workflow_call` steps do not accept `quality_gates`.
 
@@ -161,6 +164,7 @@ Sub-steps execute concurrently, and the parent aggregates sub-step matches via `
   - name: reviewers
     parallel:
       - name: arch-review
+        session_key: arch-review
         persona: architecture-reviewer
         policy: review
         knowledge: architecture
@@ -170,6 +174,7 @@ Sub-steps execute concurrently, and the parent aggregates sub-step matches via `
           - condition: needs_fix
         instruction: review-arch
       - name: security-review
+        session_key: security-review
         persona: security-reviewer
         policy: review
         edit: false
@@ -332,6 +337,8 @@ Promotion is not supported on parallel sub-steps.
 |--------|---------|-------------|
 | `persona` | - | Persona key (references section map) or file path |
 | `persona_name` | - | Display name for logs and prompts. It does not affect `provider_routing.personas` |
+| `session_key` | - | Explicit session key for normal agent steps and parallel sub-steps. The resolved provider is appended to the runtime key; empty and whitespace-only values are invalid |
+| `requires_user_input` | `false` | Marks a normal agent step as capable of waiting for user input. System steps, workflow-call steps, and parallel parent steps cannot set it. A step with `requires_user_input: true` requires interactive mode and a user input handler before the agent runs; otherwise the workflow aborts without executing that agent. The actual wait is triggered only by a matching rule with `requires_user_input: true` |
 | `tags` | - | Ordered provider routing tags matched against `provider_routing.tags` in config |
 | `policy` | - | Policy key or array of keys |
 | `knowledge` | - | Knowledge key or array of keys |
@@ -355,6 +362,10 @@ Promotion is not supported on parallel sub-steps.
 | `required_permission_mode` | - | Required minimum permission mode: `readonly`, `edit`, or `full` |
 | `output_contracts` | - | Report file configuration (name, format) |
 | `quality_gates` | - | Agent-step completion gates. String entries are AI instructions; `type: command` entries are executed after step completion and feed failures back into the same agent step |
+
+For normal agent steps, parallel sub-steps, and `loop_monitors.judge`, `model: null` explicitly omits the model. This is different from leaving `model` out: absence continues fallback to applicable lower-priority sources such as routing, workflow, the triggering step for loop monitor judges, and input models, while `null` stops model resolution at that entry. Providers that require an explicit model still fail validation.
+
+The effective tool list may be narrower than configured. When `edit: false`, or when a step has `output_contracts` and does not set `edit: true`, TAKT removes command/edit tools from `provider_options.*.allowed_tools` before calling the provider. For Claude-family providers, comma-separated entries are normalized into atomic tool specs first, `Bash(...)` is judged by the canonical tool name before `(`, and `Bash`, `Edit`, `Write`, `Apply_Patch`, and `Patch` are removed. For OpenCode, lowercase tools such as `bash`, `edit`, and `write` are removed. The same read-only filtering applies to `team_leader.part_allowed_tools` when the part's effective edit setting is false, such as `part_edit: false` or inherited `edit: false`.
 
 ## Workflow-level Configuration
 
@@ -429,6 +440,7 @@ loop_monitors:
   - cycle: [review, fix]
     threshold: 3
     judge:
+      session_key: loop-supervisor
       persona: supervisor
       instruction: "Evaluate if the fix loop is making progress..."
       rules:
@@ -437,6 +449,10 @@ loop_monitors:
         - condition: "No progress"
           next: ABORT
 ```
+
+`loop_monitors.judge` supports `provider`, `model`, and `provider_options` with the same provider/model validation as agent steps. When `provider` is omitted, the judge inherits the triggering step provider and model. When `provider` is set without `model`, the inherited model is cleared. Use `model: null` to explicitly use a provider or CLI default even when the triggering step has a resolved model.
+
+`loop_monitors.judge.session_key` follows the same provider-suffixed runtime key behavior as step `session_key`. Set it when separate monitors use the same persona but should not resume the same judge session.
 
 ### `rate_limit_fallback`
 

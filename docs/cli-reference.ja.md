@@ -107,6 +107,33 @@ takt --task "Add authentication" --workflow dual
 
 **注意:** 引数として文字列を渡す場合（例: `takt "Add login feature"`）は、初期メッセージとしてインタラクティブモードに入ります。
 
+## Instant Exec モード
+
+`takt exec` は、workflow YAML を手で書かずに TAKT の対話型タスク入力モードを開始します。アシスタントエージェントが依頼を明確化し、`/go` で会話を生成 workflow に変換し、ワーカーエージェントが実装し、判定エージェントが結果をレビューし、必要な場合だけ再計画エージェントがユーザーに方向性を確認し、ループ検知が不毛な反復を防ぎます。
+
+```bash
+takt exec          # 前回設定を使用（初回はデフォルト）
+takt exec backend  # 名前付きプリセットで開始
+takt exec --list   # 利用可能な exec プリセットを表示
+```
+
+プリセットの探索順は project `.takt/exec/presets/`、global `$TAKT_CONFIG_DIR/exec/presets/`（未設定時は `~/.takt/exec/presets/`）、builtin `builtins/exec/presets/` です。builtin/default プリセットは、エージェントの役割、facet、ループ検知しきい値だけを定義します。provider と model は exec モード開始時に通常の TAKT 設定から解決され、assistant 対話、`/setup` 表示、workflow 生成で同じ解決結果が使われます。exec config で明示した場合だけ provider/model を上書きします。`effort` は明示設定された場合だけ出力されます。`/setup` で変更した設定は、次回起動用の設定として `$TAKT_CONFIG_DIR/exec.yaml`（未設定時は `~/.takt/exec.yaml`）に保存されます。
+
+exec モード内の主なコマンド:
+
+| コマンド | 説明 |
+|----------|------|
+| `/setup` | エージェント、replan facet、ループ検知しきい値、project/global preset を編集 |
+| `/go` | 会話内容を実行用タスク指示に要約し、生成 workflow を実行 |
+| `/go <note>` | 会話要約に追加メモを付けて実行 |
+| `/cancel` | 実行せず終了 |
+
+`/setup` では project/global プリセットの保存・削除ができます。Instruction、Knowledge、Policy は通常の facet 参照で、作成した facet は `.takt/facets/{instructions,knowledge,policies}/` または `$TAKT_CONFIG_DIR/facets/{instructions,knowledge,policies}/`（未設定時は `~/.takt/facets/{instructions,knowledge,policies}/`）に保存されます。
+
+`/go` 実行時、TAKT は `.takt/exec/workflow.yaml` を生成し、既存の workflow engine で実行します。事前の会話もインラインのタスク本文もない `/go` は、workflow を作成する前に拒否されます。完了後は judge result report を読み戻し、exec assistant セッションへ注入して最終サマリを返します。
+
+生成される exec workflow は `session_key` でワーカーエージェント、判定エージェント、再計画エージェント、ループ検知のセッションを分離します。ユーザー定義 workflow では通常の agent step、parallel sub-step、`loop_monitors.judge` にだけ `session_key` を指定できます。system step、workflow_call step、parallel parent step では指定できません。実際のセッションキーは解決済み provider を付けた形になります。
+
 ## GitHub Issue タスク
 
 GitHub Issue を直接タスクとして実行できます。Issue のタイトル、本文、ラベル、コメントがタスク内容として自動的に取り込まれます。
