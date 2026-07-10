@@ -278,21 +278,30 @@ TAKT にステップごとの provider/model 選択を任せる場合は、`prov
 
 ```yaml
 provider: auto
+takt_providers:
+  assistant:           # インタラクティブ assistant は auto routing 対象外のため明示指定する
+    provider: codex
+    model: gpt-5.6-sol
 auto_routing:
   strategy: balanced   # cost, balanced, or performance
   router:
-    provider: claude-sdk
-    model: claude-haiku-4-5-20251001
+    provider: codex
+    model: gpt-5.6-luna
   candidates:
+    - name: advanced
+      description: Planning, final decisions, requirement-fulfillment judgment, and other advanced reasoning
+      provider: codex
+      model: gpt-5.6-sol
+      cost_tier: high
     - name: coding
       description: Implementation, tests, debugging, and refactoring
       provider: codex
-      model: gpt-5
+      model: gpt-5.6-terra
       cost_tier: medium
     - name: lightweight
       description: Formatting and small mechanical edits
-      provider: claude-sdk
-      model: claude-haiku-4-5-20251001
+      provider: codex
+      model: gpt-5.6-luna
       cost_tier: low
   rules:
     tags:

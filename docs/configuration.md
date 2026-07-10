@@ -527,39 +527,43 @@ Set `provider: auto` when TAKT should choose both provider and model from an eff
 ```yaml
 provider: auto
 
+takt_providers:
+  assistant:
+    provider: codex
+    model: gpt-5.6-sol
+
 auto_routing:
   strategy: balanced # cost | balanced | performance
   router:
-    provider: claude-sdk
-    model: claude-haiku-4-5-20251001
+    provider: codex
+    model: gpt-5.6-luna
   candidates:
-    - name: reasoning
-      description: Complex reasoning, architecture, and ambiguous decisions
-      provider: claude-sdk
-      model: claude-opus-4-20250514
+    - name: advanced
+      description: Planning, final decisions, requirement-fulfillment judgment, and other advanced reasoning
+      provider: codex
+      model: gpt-5.6-sol
       cost_tier: high
     - name: coding
       description: Implementation, tests, debugging, and refactoring
       provider: codex
-      model: gpt-5
+      model: gpt-5.6-terra
       cost_tier: medium
-      provider_options:
-        codex:
-          reasoning_effort: high
     - name: lightweight
       description: Formatting and small mechanical edits
-      provider: claude-sdk
-      model: claude-haiku-4-5-20251001
+      provider: codex
+      model: gpt-5.6-luna
       cost_tier: low
   rules:
     tags:
       implementation: coding
-      architecture: reasoning
+      architecture: advanced
     steps:
-      security-audit: reasoning
+      security-audit: advanced
     personas:
-      architect: reasoning
+      architect: advanced
 ```
+
+Auto routing applies to workflow step execution only. The interactive assistant does not go through auto routing: a top-level `provider: auto` is ignored for the assistant, so pair it with `takt_providers.assistant` (or pass `--provider` on the CLI). Without either, assistant startup fails with `Provider is not configured.`
 
 Resolution order stays conservative: `promotion`, explicit step provider/model, `provider_routing`, and `persona_providers` win before auto routing. Auto routing then checks rules in `tags`, `steps`, `personas` order. If multiple step tags match, the later tag on the step wins. If no rule matches, TAKT asks the configured router model to select a candidate from descriptions; router failures log a warning and fall back to the strategy default: `cost` chooses the first `low` candidate, `balanced` the first `medium`, and `performance` the first `high`.
 

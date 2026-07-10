@@ -527,39 +527,43 @@ TAKT に provider と model の両方を実効 `auto_routing` candidate list か
 ```yaml
 provider: auto
 
+takt_providers:
+  assistant:
+    provider: codex
+    model: gpt-5.6-sol
+
 auto_routing:
   strategy: balanced # cost | balanced | performance
   router:
-    provider: claude-sdk
-    model: claude-haiku-4-5-20251001
+    provider: codex
+    model: gpt-5.6-luna
   candidates:
-    - name: reasoning
-      description: Complex reasoning, architecture, and ambiguous decisions
-      provider: claude-sdk
-      model: claude-opus-4-20250514
+    - name: advanced
+      description: Planning, final decisions, requirement-fulfillment judgment, and other advanced reasoning
+      provider: codex
+      model: gpt-5.6-sol
       cost_tier: high
     - name: coding
       description: Implementation, tests, debugging, and refactoring
       provider: codex
-      model: gpt-5
+      model: gpt-5.6-terra
       cost_tier: medium
-      provider_options:
-        codex:
-          reasoning_effort: high
     - name: lightweight
       description: Formatting and small mechanical edits
-      provider: claude-sdk
-      model: claude-haiku-4-5-20251001
+      provider: codex
+      model: gpt-5.6-luna
       cost_tier: low
   rules:
     tags:
       implementation: coding
-      architecture: reasoning
+      architecture: advanced
     steps:
-      security-audit: reasoning
+      security-audit: advanced
     personas:
-      architect: reasoning
+      architect: advanced
 ```
+
+auto routing が適用されるのは workflow の step 実行だけです。インタラクティブ assistant は auto routing を通りません。top-level の `provider: auto` は assistant では無視されるため、`takt_providers.assistant` を併記するか、CLI で `--provider` を渡してください。どちらもない場合、assistant は起動時に `Provider is not configured.` で失敗します。
 
 解決順序は保守的です。`promotion`、明示的な step provider/model、`provider_routing`、`persona_providers` が auto routing より優先されます。その後、auto routing は `tags`、`steps`、`personas` の順に rule を確認します。複数の step tag が一致した場合は、step 上で後ろに書かれた tag が優先されます。rule が一致しない場合、TAKT は設定された router model に candidate description から候補を選ばせます。router failure は warning を出し、strategy default にフォールバックします。`cost` は最初の `low` candidate、`balanced` は最初の `medium` candidate、`performance` は最初の `high` candidate を選びます。
 
