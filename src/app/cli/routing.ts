@@ -98,6 +98,8 @@ export async function executeDefaultAction(task?: string): Promise<void> {
   const taskFromOption = opts.task as string | undefined;
   if (taskFromOption) {
     selectOptions.skipTaskList = true;
+    // A direct foreground run can safely hand a workflow decision back to its terminal.
+    selectOptions.interactiveUserInput = true;
     await selectAndExecuteTask(resolvedCwd, taskFromOption, selectOptions, agentOverrides);
     return;
   }

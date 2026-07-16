@@ -254,6 +254,7 @@ describe('resumeDirectRun', () => {
       projectCwd: '/project',
       workflowIdentifier: 'default',
       agentOverrides: { provider: 'mock', model: 'gpt-test' },
+      interactiveUserInput: true,
       resumePoint,
       startStep: 'review',
       directResume: {

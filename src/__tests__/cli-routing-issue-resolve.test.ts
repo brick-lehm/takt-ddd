@@ -240,6 +240,25 @@ describe('Issue resolution in routing', () => {
     mockExit.mockRestore();
   });
 
+  it('should enable workflow user input for a direct --task execution', async () => {
+    mockOpts.task = 'Implement direct input handling';
+    mockOpts.workflow = 'migration-workflow';
+
+    await executeDefaultAction();
+
+    expect(mockSelectAndExecuteTask).toHaveBeenCalledWith(
+      '/test/cwd',
+      'Implement direct input handling',
+      expect.objectContaining({
+        workflow: 'migration-workflow',
+        interactiveUserInput: true,
+        skipTaskList: true,
+      }),
+      undefined,
+    );
+    expect(mockInteractiveMode).not.toHaveBeenCalled();
+  });
+
 
   describe('--issue option', () => {
     it('should pass --workflow to determineWorkflow and selectAndExecuteTask', async () => {

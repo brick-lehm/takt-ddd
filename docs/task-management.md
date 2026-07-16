@@ -13,6 +13,18 @@ TAKT provides a task management workflow for accumulating multiple tasks and exe
 
 Each task executes in an isolated shared clone (optional), produces reports, and creates a branch that can be merged or discarded via `takt list`.
 
+## Direct Runs and Human Decisions
+
+Run a workflow directly when you want to keep the terminal attached to that run:
+
+```bash
+takt --workflow my-workflow --task "Implement the requested change"
+```
+
+If a workflow step or transition declares `requires_user_input: true`, TAKT shows the workflow's question in that terminal and waits for your answer. The answer is returned to the same workflow run so it can continue from the decision point.
+
+`takt resume` behaves the same way for a failed or aborted direct run. This applies only to foreground direct runs; queued tasks (`takt run`) and stdio MCP execution remain non-interactive so concurrent or remote execution cannot wait indefinitely for a terminal response.
+
 ## Adding Tasks (`takt add`)
 
 Use `takt add` to create a new task entry in `.takt/tasks.yaml`.

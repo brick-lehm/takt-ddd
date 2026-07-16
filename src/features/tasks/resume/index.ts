@@ -253,6 +253,7 @@ async function executeDirectResume(
       retryNote: executionRetryNote,
       resumePoint: context.resumePoint,
       directResume: buildDirectResumeMetadata(context.run, resumeMode),
+      interactiveUserInput: true,
       ...(preparedExecution ? { reportDirName: preparedExecution.reportDirName } : {}),
       traceTaskMetadata: buildTraceTaskMetadata({
         taskContent: executionTask,
