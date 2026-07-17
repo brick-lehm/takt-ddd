@@ -111,7 +111,8 @@ ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当
 # vcs_provider: github                   # 'github' または 'gitlab'
 
 # assistant プロバイダー（省略可）
-# インタラクティブモードの会話と Report phase fallback provider をルーティング
+# assistant 会話（インタラクティブモードの計画会話、既存タスクへの追加指示 (instruct)、
+# リトライ対話）と Report phase fallback provider をルーティング
 # Report fallback は OpenCode の report retry が失敗した場合のみ、この設定を使用します。
 # project assistant は global assistant を上書きします。assistant 未設定時、Report fallback は
 # top-level provider/model へ暗黙フォールバックしません。
@@ -202,7 +203,7 @@ ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当
 | `base_branch` | string | - | クローン作成のベースブランチ（デフォルトはリモートのデフォルトブランチ） |
 | `workflow_categories_file` | string | - | カテゴリファイルのパス（[Workflow カテゴリ](#workflow-categories) 参照。デフォルトのユーザー上書きは `workflow-categories.yaml`） |
 | `vcs_provider` | `"github"` \| `"gitlab"` | 自動検出 | VCS プロバイダー（git リモート URL から自動検出） |
-| `takt_providers` | object | - | TAKT 内部プロバイダー上書き。`assistant` はインタラクティブモードの会話をルーティングし、OpenCode の report retry 失敗後の Report phase fallback provider としても使われます。project の `takt_providers.assistant` は global の `takt_providers.assistant` を上書きします。どちらも未設定の場合、Report phase fallback は無効で、top-level `provider` / `model` は暗黙 fallback として使われません。 |
+| `takt_providers` | object | - | TAKT 内部プロバイダー上書き。`assistant` は assistant 会話（インタラクティブモードの計画会話、既存タスクへの追加指示 (instruct)、リトライ対話）をルーティングし、OpenCode の report retry 失敗後の Report phase fallback provider としても使われます。project の `takt_providers.assistant` は global の `takt_providers.assistant` を上書きします。どちらも未設定の場合、Report phase fallback は無効で、top-level `provider` / `model` は暗黙 fallback として使われません。 |
 | `telemetry` | object | `{ routing_decisions: true }` | local-only の routing decision 記録。`telemetry.routing_decisions` は auto-routing decision を project `.takt/events/` 配下に NDJSON として書き込むかどうかを制御します。TAKT は routing decision をアップロードしません。 |
 | `workflow_mcp_servers` | object | すべて `false` | MCP サーバートランスポートポリシー（`stdio`, `sse`, `http` トグル） |
 | `workflow_arpeggio` | object | すべて `false` | Arpeggio カスタムコードポリシー（`custom_data_source_modules`, `custom_merge_inline_js`, `custom_merge_files`） |
@@ -273,7 +274,7 @@ ignore_exceed: false          # takt run / takt watch で --ignore-exceed 相当
 | `provider_options` | object | - | provider 固有オプション |
 | `provider_profiles` | object | - | provider 固有のパーミッションプロファイル |
 | `vcs_provider` | `"github"` \| `"gitlab"` | 自動検出 | VCS プロバイダー（グローバルを上書き） |
-| `takt_providers` | object | - | TAKT 内部プロバイダー上書き。project の `takt_providers.assistant` は global assistant provider/model を上書きし、インタラクティブモードの会話と、OpenCode の report retry 失敗後の Report phase fallback に使われます。project と global の assistant がどちらも未設定の場合、Report phase fallback は無効で、top-level `provider` / `model` は暗黙 fallback として使われません。 |
+| `takt_providers` | object | - | TAKT 内部プロバイダー上書き。project の `takt_providers.assistant` は global assistant provider/model を上書きし、assistant 会話（インタラクティブモードの計画会話、既存タスクへの追加指示 (instruct)、リトライ対話）と、OpenCode の report retry 失敗後の Report phase fallback に使われます。project と global の assistant がどちらも未設定の場合、Report phase fallback は無効で、top-level `provider` / `model` は暗黙 fallback として使われません。 |
 | `workflow_mcp_servers` | object | - | MCP サーバートランスポートポリシー（グローバルを上書き） |
 | `workflow_arpeggio` | object | - | Arpeggio カスタムコードポリシー（グローバルを上書き） |
 | `workflow_runtime_prepare` | object | - | ランタイム prepare ポリシー（グローバルを上書き） |
@@ -610,7 +611,7 @@ auto_routing:
 
 effective top-level provider が `auto` の場合、AI による task slug 生成など、workflow step context を持たず concrete provider を必要とする内部処理では `auto_routing.default_provider` を使用します。`default_provider.provider` は必須で、`auto` は指定できません。`default_provider.model` は省略可能です。project の `default_provider` は global の値よりオブジェクト単位で優先されるため、`provider` と `model` が global のオブジェクトのフィールドと合成されることはありません。このような処理の実行時に設定がない場合は、`Configuration error: auto_routing.default_provider is required when provider is auto for operations without workflow step context.` というエラーになります。effective top-level provider が concrete provider の場合は、従来どおり top-level の provider/model を使用します。
 
-auto routing の candidate 選択が適用されるのは workflow の step 実行だけです。`auto_routing.router` は routing 判定専用であり、`default_provider` として暗黙に使用されません。インタラクティブ assistant は auto routing を通らず、引き続き `takt_providers.assistant` を使用します。この assistant 設定がその他の内部処理の default として使用されることもありません。top-level の `provider: auto` は assistant では無視されるため、`takt_providers.assistant` を併記するか、CLI で `--provider` を渡してください。どちらもない場合、assistant は起動時に `Provider is not configured.` で失敗します。
+auto routing の candidate 選択が適用されるのは workflow の step 実行だけです。`auto_routing.router` は routing 判定専用であり、`default_provider` として暗黙に使用されません。assistant 会話（インタラクティブモードの計画会話、既存タスクへの追加指示 (instruct)、リトライ対話）は auto routing を通らず、引き続き `takt_providers.assistant` を使用します。この assistant 設定がその他の内部処理の default として使用されることもありません。top-level の `provider: auto` は assistant では無視されるため、`takt_providers.assistant` を併記してください。CLI の `--provider` / `--model` override が効くのはインタラクティブモードの計画会話のみです。instruct / retry は `takt_providers.assistant`（未設定時は top-level provider/model）を解決し、それらの CLI override は受け取りません。解決可能な assistant または top-level provider がない場合、assistant は起動時に `Provider is not configured.` で失敗します。
 
 解決順序は保守的です。`promotion`、明示的な step provider/model、`provider_routing`、`persona_providers` が auto routing より優先されます。その後、auto routing は `tags`、`steps`、`personas` の順に rule を確認します。複数の step tag が一致した場合は、step 上で後ろに書かれた tag が優先されます。rule が一致しない場合、TAKT は設定された router model に candidate description から候補を選ばせます。router failure は warning を出し、strategy default にフォールバックします。`cost` は最初の `low` candidate、`balanced` は最初の `medium` candidate、`performance` は最初の `high` candidate を選びます。
 

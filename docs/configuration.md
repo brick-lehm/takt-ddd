@@ -111,7 +111,8 @@ ignore_exceed: false          # Applies to takt run and takt watch like --ignore
 # vcs_provider: github                   # 'github' or 'gitlab'
 
 # Assistant provider (optional)
-# Routes the interactive planning conversation and the Report phase fallback provider.
+# Routes assistant conversations (interactive planning, instruct on existing tasks,
+# and retry dialogue) and the Report phase fallback provider.
 # Report fallback uses this only after an OpenCode report retry fails.
 # Project assistant overrides global assistant; when assistant is unset, TAKT does not
 # fall back to top-level provider/model for report fallback.
@@ -202,7 +203,7 @@ ignore_exceed: false          # Applies to takt run and takt watch like --ignore
 | `base_branch` | string | - | Base branch for clone creation (defaults to remote default branch) |
 | `workflow_categories_file` | string | - | Path to categories file (see [Workflow categories](#workflow-categories); default overlay path uses `workflow-categories.yaml`) |
 | `vcs_provider` | `"github"` \| `"gitlab"` | auto-detect | VCS provider (auto-detected from git remote URL) |
-| `takt_providers` | object | - | TAKT internal provider overrides. `assistant` routes the interactive planning conversation and is also used as the Report phase fallback provider after an OpenCode report retry fails. Project `takt_providers.assistant` overrides global `takt_providers.assistant`; if neither is set, Report phase fallback is disabled and top-level `provider` / `model` are not used as an implicit fallback. |
+| `takt_providers` | object | - | TAKT internal provider overrides. `assistant` routes assistant conversations (interactive planning, instruct on existing tasks, and retry dialogue) and is also used as the Report phase fallback provider after an OpenCode report retry fails. Project `takt_providers.assistant` overrides global `takt_providers.assistant`; if neither is set, Report phase fallback is disabled and top-level `provider` / `model` are not used as an implicit fallback. |
 | `telemetry` | object | `{ routing_decisions: true }` | Local-only routing decision recording. `telemetry.routing_decisions` controls whether auto-routing decisions are written as NDJSON under the project `.takt/events/` directory. TAKT does not upload routing decisions. |
 | `workflow_mcp_servers` | object | all `false` | MCP server transport policy (`stdio`, `sse`, `http` toggles) |
 | `workflow_arpeggio` | object | all `false` | Arpeggio custom code policy (`custom_data_source_modules`, `custom_merge_inline_js`, `custom_merge_files`) |
@@ -273,7 +274,7 @@ ignore_exceed: false          # Applies to takt run and takt watch like --ignore
 | `provider_options` | object | - | Provider-specific options |
 | `provider_profiles` | object | - | Provider-specific permission profiles |
 | `vcs_provider` | `"github"` \| `"gitlab"` | auto-detect | VCS provider (overrides global) |
-| `takt_providers` | object | - | TAKT internal provider overrides. Project `takt_providers.assistant` overrides the global assistant provider/model and is used for the interactive planning conversation and Report phase fallback after an OpenCode report retry fails. If project and global assistant are both unset, Report phase fallback is disabled and top-level `provider` / `model` are not used as an implicit fallback. |
+| `takt_providers` | object | - | TAKT internal provider overrides. Project `takt_providers.assistant` overrides the global assistant provider/model and is used for assistant conversations (interactive planning, instruct on existing tasks, and retry dialogue) and Report phase fallback after an OpenCode report retry fails. If project and global assistant are both unset, Report phase fallback is disabled and top-level `provider` / `model` are not used as an implicit fallback. |
 | `workflow_mcp_servers` | object | - | MCP server transport policy (overrides global) |
 | `workflow_arpeggio` | object | - | Arpeggio custom code policy (overrides global) |
 | `workflow_runtime_prepare` | object | - | Runtime prepare policy (overrides global) |
@@ -610,7 +611,7 @@ auto_routing:
 
 When the effective top-level provider is `auto`, TAKT uses `auto_routing.default_provider` for internal operations that need a concrete provider but have no workflow step context, such as AI task-slug generation. `default_provider.provider` is required and cannot be `auto`; `default_provider.model` is optional. The project `default_provider` takes precedence over the global value as a whole object, so its `provider` and `model` are not merged with fields from the global object. If this setting is missing when such an operation runs, TAKT reports `Configuration error: auto_routing.default_provider is required when provider is auto for operations without workflow step context.` A concrete effective top-level provider continues to use its top-level provider/model.
 
-Auto-routing candidate selection applies to workflow step execution only. `auto_routing.router` is only for routing decisions and is never used implicitly as `default_provider`. The interactive assistant does not go through auto routing and continues to use `takt_providers.assistant`; that assistant setting is not used as the default for other internal operations. A top-level `provider: auto` is ignored for the assistant, so pair it with `takt_providers.assistant` (or pass `--provider` on the CLI). Without either, assistant startup fails with `Provider is not configured.`
+Auto-routing candidate selection applies to workflow step execution only. `auto_routing.router` is only for routing decisions and is never used implicitly as `default_provider`. Assistant conversations (interactive planning, instruct on existing tasks, and retry dialogue) do not go through auto routing and continue to use `takt_providers.assistant`; that assistant setting is not used as the default for other internal operations. A top-level `provider: auto` is ignored for the assistant, so pair it with `takt_providers.assistant`. CLI `--provider` / `--model` overrides apply to interactive planning only; instruct and retry resolve `takt_providers.assistant` (then top-level provider/model when assistant is unset) and do not take those CLI overrides. Without a resolvable assistant or top-level provider, assistant startup fails with `Provider is not configured.`
 
 Resolution order stays conservative: `promotion`, explicit step provider/model, `provider_routing`, and `persona_providers` win before auto routing. Auto routing then checks rules in `tags`, `steps`, `personas` order. If multiple step tags match, the later tag on the step wins. If no rule matches, TAKT asks the configured router model to select a candidate from descriptions; router failures log a warning and fall back to the strategy default: `cost` chooses the first `low` candidate, `balanced` the first `medium`, and `performance` the first `high`.
 

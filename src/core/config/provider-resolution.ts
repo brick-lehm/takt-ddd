@@ -78,7 +78,7 @@ export function resolveNonWorkflowProviderModelFromConfig(
 }
 
 /**
- * Resolve provider/model for assistant interactive mode.
+ * Resolve provider/model for assistant conversations (interactive, instruct, retry).
  * Priority: CLI overrides > local assistant > global assistant > local top-level > global top-level
  */
 export function resolveAssistantProviderModelFromConfig(
