@@ -10,15 +10,16 @@ import type {
   AgentWorkflowStep,
   WorkflowState,
   AgentResponse,
+  WorkflowConfig,
   WorkflowMaxSteps,
   WorkflowResumePointEntry,
-  WorkflowConfig,
 } from '../../models/types.js';
 import { executeAgent } from '../../../agents/agent-usecases.js';
 import { isWorkflowCallStep } from '../step-kind.js';
 import { ParallelLogger } from './parallel-logger.js';
 import { needsStatusJudgmentPhase, runReportPhase, ReportPhaseGenerationError, runStatusJudgmentPhase } from '../phase-runner.js';
 import { detectMatchedRule } from '../evaluation/index.js';
+import { RuleDetectionExhaustedError } from '../evaluation/RuleDetectionExhaustedError.js';
 import { evaluateWhenExpression } from '../evaluation/when-evaluator.js';
 import { resolvePhase3Adoption } from '../evaluation/rule-utils.js';
 import type { StatusJudgmentPhaseResult } from '../phase-runner.js';
@@ -39,16 +40,17 @@ import { buildPhaseExecutionId } from '../../../shared/utils/phaseExecutionId.js
 import { sanitizeSensitiveText } from '../../../shared/utils/sensitiveText.js';
 import type { FindingContractConfig } from '../../models/types.js';
 import type { FindingLedgerStore } from '../findings/store.js';
+import type { FindingManagerRunResult } from '../findings/manager-runner.js';
 import {
-  RawFindingsStructuredOutput,
-  type FindingManagerRunResult,
-  runFindingManagerForParallelStep,
-} from '../findings/manager-runner.js';
-import { ledgerHasOpenFindings, ledgerHasWaivedFindings, renderFindingLedgerInstructionSummary, renderFindingLedgerReportSummary } from '../findings/context.js';
-import { isNonAiReturnValueRule } from '../evaluation/rule-utils.js';
+  ingestFindingContractResults,
+  withFindingContractStructuredOutput,
+} from '../findings/contract-intake.js';
+import { clarifyAmbiguousRawRelationsOnce, type ReviewerRelationClarification } from '../findings/relation-coherence.js';
 import type { WorkflowCallRunner } from './WorkflowCallRunner.js';
 import type { WorkflowCallIsolatedStateSync, WorkflowCallSessionUpdates } from './WorkflowCallExecutor.js';
 import { compactSessionBeforePhase1 } from './session-compaction.js';
+import { invalidateExpectedPersonaSession, invalidatePersonaSessionIfExpected } from './session-invalidation.js';
+import { StructuredOutputSchemaError } from './structured-output-schema-validator.js';
 import { recordDelegatedAgentUsage } from './delegated-agent-usage.js';
 
 const log = createLogger('parallel-runner');
@@ -56,6 +58,8 @@ const log = createLogger('parallel-runner');
 type ParallelSubStepResult = {
   subStep: WorkflowStep;
   response: AgentResponse;
+  /** レビュア1回突き返しの実施記録（engine 発行の taint 根拠。manager-runner が canonicalization へ渡す）。 */
+  relationClarification?: ReviewerRelationClarification;
   instruction: string;
   providerInfo?: StepRunResult['providerInfo'];
   durationMs?: number;
@@ -139,6 +143,7 @@ export interface ParallelRunnerDeps {
   readonly refreshFindingsState: () => void;
   readonly emitEvent: (event: string, ...args: unknown[]) => void;
   readonly findingContract?: FindingContractConfig;
+  /** findings-manager の provider/model 未指定時の fallback（manager-runner.ts 参照）。 */
   readonly workflowProvider?: WorkflowConfig['provider'];
   readonly workflowModel?: WorkflowConfig['model'];
   readonly findingLedgerStore?: FindingLedgerStore;
@@ -146,6 +151,8 @@ export interface ParallelRunnerDeps {
   readonly updateMaxSteps: (maxSteps: WorkflowMaxSteps) => void;
   readonly setActiveResumePoint: (step: WorkflowStep, iteration: number) => void;
   readonly getRunId: () => string;
+  /** raw finding id 衝突対策の呼び出し名前空間。トップレベルでは空文字列。 */
+  readonly getFindingCallNamespace: () => string;
   readonly runQualityGates: (options: {
     qualityGates: WorkflowStep['qualityGates'];
     projectRoot: string;
@@ -239,7 +246,19 @@ export class ParallelRunner {
     if (semaphore) {
       log.debug('Concurrency limit enabled', { step: step.name, concurrency: step.concurrency });
     }
-    const findingLedgerCopyPath = this.prepareFindingContractLedgerCopy();
+    // WorkflowEngineSetup.buildFindingContractInstructionContext と同じヘルパを
+    // ラウンドの先頭で1回だけ呼ぶ（sub-step ごとに再計算しない）。ledgerCopyPath /
+    // reviewScopeSnapshotId は「このラウンドの reviewer 全員が同じ値を見る」ことが
+    // 前提の値であり（後者は manager 検証時の再計算と一致する必要がある —
+    // WorkflowEngineSetup.ts・snapshot.ts 参照）、ここで inline に再実装すると
+    // reviewScopeSnapshotId の付与漏れのような配線バグを繰り返す。
+    // findingContract 未設定のワークフローが大半のため、クロージャ呼び出し自体を
+    // 避ける早期リターンは維持する（OptionsBuilder 側でも undefined を返すが、
+    // 呼び出しコストを避けたい）。
+    const findingContractContext = this.deps.findingContract
+      ? this.deps.optionsBuilder.buildFindingContractInstructionContext(step, true)
+      : undefined;
+    const findingLedgerCopyPath = findingContractContext?.ledgerCopyPath;
     const agentSubSteps = subSteps.filter(isAgentParallelSubStep);
     const routedProviderInfoByStep = this.deps.engineOptions.autoRouting
       ? await resolveAutoRoutingBatch({
@@ -252,7 +271,7 @@ export class ParallelRunner {
               personaKey: subStep.providerRoutingPersonaKey,
               instruction: subStep.instruction,
             },
-            currentProviderInfo: this.deps.optionsBuilder.resolveStepProviderModel(subStep, runtime),
+            currentProviderInfo: this.deps.optionsBuilder.resolveStepProviderModelBeforeAutoRouting(subStep, runtime),
           })),
           routeBatchWithAi: this.deps.engineOptions.autoRoutingAiRouter?.routeBatch,
           logger: log,
@@ -264,7 +283,6 @@ export class ParallelRunner {
     // When semaphore is set, at most `concurrency` sub-steps execute simultaneously.
     const subStepStartedAtByName = new Map<string, number>();
     const subStepInstructionByName = new Map<string, string>();
-    const subStepProviderInfoByName = new Map<string, NonNullable<StepRunResult['providerInfo']>>();
     const settled = await Promise.allSettled(
       subSteps.map(async (subStep, index) => {
         if (semaphore) {
@@ -281,7 +299,7 @@ export class ParallelRunner {
             throw new Error(`Unsupported parallel sub-step kind for "${subStep.name}"`);
           }
 
-          const executableSubStep = this.withFindingContractStructuredOutput(subStep, findingLedgerCopyPath);
+          const executableSubStep = withFindingContractStructuredOutput(subStep, findingLedgerCopyPath);
           const subRuntime = routedProviderInfoByStep.has(subStep.name)
             ? {
                 ...runtime,
@@ -296,16 +314,7 @@ export class ParallelRunner {
             task,
             maxSteps,
             subRuntime?.fallback,
-            findingLedgerCopyPath
-              ? {
-                  ledgerCopyPath: findingLedgerCopyPath,
-                  ledgerSummary: this.renderFindingLedgerSummary(),
-                  reportLedgerSummary: this.renderFindingLedgerReportSummary(),
-                  hasOpenFindings: this.ledgerHasOpenFindings(),
-                  hasWaivedFindings: this.ledgerHasWaivedFindings(),
-                  rawFindingsJsonSchema: RawFindingsStructuredOutput.schema,
-                }
-              : undefined,
+            findingContractContext,
           );
           const phase1Instruction = findingLedgerCopyPath
             ? this.deps.stepExecutor.buildPhase1Instruction(subInstruction, executableSubStep, subRuntime)
@@ -315,7 +324,6 @@ export class ParallelRunner {
           const subPm = subRuntime
             ? this.deps.optionsBuilder.resolveStepProviderModel(executableSubStep, subRuntime)
             : this.deps.optionsBuilder.resolveStepProviderModel(executableSubStep);
-          subStepProviderInfoByName.set(subStep.name, subPm);
           const subRuleCtx = {
             ...parentRuleCtx,
             provider: subPm.provider,
@@ -329,7 +337,15 @@ export class ParallelRunner {
 
         // Phase 1: main execution (Write excluded if sub-step has report)
         const baseOptions = this.deps.optionsBuilder.buildAgentOptions(executableSubStep, subRuntime);
-        await compactSessionBeforePhase1(executableSubStep, baseOptions);
+        const compactionOutcome = await compactSessionBeforePhase1(executableSubStep, baseOptions);
+        if (compactionOutcome === 'fresh') {
+          invalidatePersonaSessionIfExpected(
+            state,
+            subSessionKey,
+            baseOptions.sessionId,
+            updatePersonaSession,
+          );
+        }
         let didEmitPhaseStart = false;
         let resolvedPromptParts: PhasePromptParts | undefined;
         const phaseExecutionId = buildPhaseExecutionId({
@@ -344,19 +360,19 @@ export class ParallelRunner {
         const agentOptions = parallelLogger
           ? {
               ...baseOptions,
-              onStream: this.deps.optionsBuilder.buildProviderStream(
-                executableSubStep,
-                subPm.provider,
-                subPm.model,
-                parallelLogger.createStreamHandler(subStep.name, index),
-              ),
+              ...(compactionOutcome === 'fresh' ? { sessionId: undefined } : {}),
+              onStream: parallelLogger.createStreamHandler(subStep.name, index),
             }
-          : { ...baseOptions };
+          : {
+              ...baseOptions,
+              ...(compactionOutcome === 'fresh' ? { sessionId: undefined } : {}),
+            };
         agentOptions.onPromptResolved = (promptParts: PhasePromptParts) => {
           resolvedPromptParts = promptParts;
           this.deps.onPhaseStart?.(subStep, 1, 'execute', phase1Instruction, promptParts, phaseExecutionId, parentIteration);
           didEmitPhaseStart = true;
         };
+        let subRelationClarification: ReviewerRelationClarification | undefined;
         let subResponse = await runWithPhaseSpan({
           enabled: this.deps.observabilityEnabled,
           runId: this.deps.observabilityRunId,
@@ -377,7 +393,11 @@ export class ParallelRunner {
           error: result.error,
           providerUsage: result.providerUsage,
         }));
-        if (subResponse.status === 'error' && subResponse.errorKind !== 'rate_limit') {
+        if (
+          compactionOutcome !== 'fresh'
+          && subResponse.status === 'error'
+          && subResponse.errorKind !== 'rate_limit'
+        ) {
           // 並列レビューの1席のプロバイダ障害で走行全体を落とさない。
           // 空転はセッション文脈起因のことが多いため（長文脈での生成品質
           // 崩壊を実測）、再試行は resume を切った新しいセッションで行う。
@@ -428,7 +448,13 @@ export class ParallelRunner {
           if (subResponse.sessionId === undefined) {
             // 再試行がセッションIDを返さなかった場合、劣化していた旧セッションを
             // resume 対象に残さない（残すと次の実行で文脈崩壊が再発する）
-            updatePersonaSession(subSessionKey, undefined);
+            invalidateExpectedPersonaSession(
+              state,
+              subSessionKey,
+              subResponse,
+              baseOptions.sessionId,
+              updatePersonaSession,
+            );
           }
         }
         if (findingLedgerCopyPath) {
@@ -460,12 +486,7 @@ export class ParallelRunner {
               permissionMode: 'readonly',
               allowedTools: [],
               onPromptResolved: undefined,
-              onStream: this.deps.optionsBuilder.buildProviderStream(
-                executableSubStep,
-                subPm.provider,
-                subPm.model,
-                undefined,
-              ),
+              onStream: undefined,
               ...(subResponse.sessionId !== undefined ? { sessionId: subResponse.sessionId } : {}),
             });
             // 非ネイティブ構造化出力プロバイダでは是正 JSON が content に入る
@@ -493,6 +514,27 @@ export class ParallelRunner {
               };
             }
           }
+          // レビュア1回突き返し: relation/target/kind の意味
+          // 矛盾がある raw について同一セッションで1回だけ明確化を求める。
+          // 直らなかった raw は drop せず ambiguous のまま manager 解釈 /
+          // provisional へ進む。clarification は engine 発行の taint 根拠として
+          // manager-runner の canonicalization に渡す。
+          if (subResponse.status === 'done' && this.deps.findingLedgerStore) {
+            const clarified = await clarifyAmbiguousRawRelationsOnce({
+              stepName: subStep.name,
+              persona: executableSubStep.persona,
+              response: subResponse,
+              ledger: this.deps.findingLedgerStore.loadLedger(),
+              agentOptions,
+              normalize: (candidate: AgentResponse) => this.deps.stepExecutor.normalizeStructuredOutputWithDiagnostics(
+                executableSubStep,
+                candidate,
+                subRuntime,
+              ),
+            });
+            subResponse = clarified.response;
+            subRelationClarification = clarified.clarification;
+          }
         }
         if (!didEmitPhaseStart) {
           throw new Error(`Missing prompt parts for phase start: ${subStep.name}:1`);
@@ -514,6 +556,7 @@ export class ParallelRunner {
           return {
             subStep,
             response: subResponse,
+            ...(subRelationClarification !== undefined ? { relationClarification: subRelationClarification } : {}),
             instruction: phase1Instruction,
             providerInfo: subPm,
             durationMs: Math.max(0, subResponse.timestamp.getTime() - startedAt),
@@ -599,6 +642,9 @@ export class ParallelRunner {
             ? await runStatusJudgmentPhase(subStep, phaseCtx)
             : undefined;
         } catch (error) {
+          if (error instanceof StructuredOutputSchemaError) {
+            throw error;
+          }
           log.info('Phase 3 status judgment failed for sub-step, falling back to phase1 rule evaluation', {
             step: subStep.name,
             error: getErrorMessage(error),
@@ -628,7 +674,21 @@ export class ParallelRunner {
         if (subPhase3 && !subPhase3GuardFailed) {
           finalResponse = { ...subResponse, matchedRuleIndex: subPhase3.ruleIndex, matchedRuleMethod: subPhase3.method };
         } else {
-          const match = await detectMatchedRule(subStep, subResponse.content, '', subRuleCtx);
+          let match;
+          try {
+            match = await detectMatchedRule(subStep, subResponse.content, '', subRuleCtx);
+          } catch (error) {
+            if (error instanceof RuleDetectionExhaustedError) {
+              invalidateExpectedPersonaSession(
+                state,
+                subSessionKey,
+                subResponse,
+                baseOptions.sessionId,
+                updatePersonaSession,
+              );
+            }
+            throw error;
+          }
           finalResponse = match
             ? { ...subResponse, matchedRuleIndex: match.index, matchedRuleMethod: match.method }
             : subResponse;
@@ -658,6 +718,7 @@ export class ParallelRunner {
         return {
           subStep,
           response: finalResponse,
+          ...(subRelationClarification !== undefined ? { relationClarification: subRelationClarification } : {}),
           instruction: phase1Instruction,
           providerInfo: subPm,
           durationMs: Math.max(0, finalResponse.timestamp.getTime() - startedAt),
@@ -692,7 +753,7 @@ export class ParallelRunner {
         subStep: failedStep,
         response: errorResponse,
         instruction: instruction === undefined ? '' : instruction,
-        providerInfo: subStepProviderInfoByName.get(failedStep.name),
+        providerInfo: routedProviderInfoByStep.get(failedStep.name),
         durationMs: startedAt === undefined
           ? 0
           : Math.max(0, errorResponse.timestamp.getTime() - startedAt),
@@ -767,24 +828,9 @@ export class ParallelRunner {
       };
     }
 
-    const findingManagerResult = await this.runFindingContractManager(
-      step,
-      stepIteration,
-      subResults,
-      findingLedgerCopyPath,
-      priorStepResponseText,
-    );
-    if (findingManagerResult?.status === 'invalid_manager_output') {
-      const response = this.createFindingManagerInvalidOutputResult({
-        step,
-        state,
-        stepIteration,
-        subResults,
-        managerResult: findingManagerResult,
-        providerInfo: findingManagerResult.providerInfo,
-      });
-      return response;
-    }
+    // v2 梯子設計: 取り込みは常に 'updated' で完了する（manager の壊れた応答・
+    // 予算超過は provisional として台帳へ着地し、run-level の失敗経路は無い）。
+    await this.runFindingContractManager(step, stepIteration, subResults, findingLedgerCopyPath, priorStepResponseText);
 
     // Print completion summary
     if (parallelLogger) {
@@ -887,12 +933,37 @@ export class ParallelRunner {
         this.deps.updateMaxSteps(result.workflowCallStateSync.maxSteps);
       }
       didSyncWorkflowCallState = true;
-      for (const [sessionKey, sessionId] of result.workflowCallSessionUpdates) {
-        updatePersonaSession(sessionKey, sessionId);
-      }
     }
+    this.mergeWorkflowCallSessionUpdates(subResults, state, updatePersonaSession);
     if (didSyncWorkflowCallState) {
       this.deps.setActiveResumePoint(step, state.iteration);
+    }
+  }
+
+  private mergeWorkflowCallSessionUpdates(
+    subResults: ParallelSubStepResult[],
+    state: WorkflowState,
+    updatePersonaSession: (persona: string, sessionId: string | undefined) => void,
+  ): void {
+    const updatesBySessionKey = new Map<string, Array<{ expectedSessionId: string | undefined; sessionId: string | undefined }>>();
+    for (const result of subResults) {
+      if (!result.workflowCallSessionUpdates || result.workflowCallExecutionRejected) {
+        continue;
+      }
+      for (const [sessionKey, update] of result.workflowCallSessionUpdates) {
+        const updates = updatesBySessionKey.get(sessionKey) ?? [];
+        updates.push(update);
+        updatesBySessionKey.set(sessionKey, updates);
+      }
+    }
+
+    for (const [sessionKey, updates] of updatesBySessionKey) {
+      const currentSessionId = state.personaSessions.get(sessionKey);
+      const applicableUpdates = updates.filter((update) => update.expectedSessionId === currentSessionId);
+      const finalUpdate = applicableUpdates.at(-1);
+      if (finalUpdate !== undefined) {
+        updatePersonaSession(sessionKey, finalUpdate.sessionId);
+      }
     }
   }
 
@@ -906,43 +977,35 @@ export class ParallelRunner {
     if (!this.deps.findingContract) {
       return undefined;
     }
-    if (!this.deps.findingLedgerStore) {
+    const ledgerStore = this.deps.findingLedgerStore;
+    if (!ledgerStore) {
       throw new Error('Finding contract is configured but finding ledger store is not available');
     }
-    const result = await runFindingManagerForParallelStep({
+    return ingestFindingContractResults({
       contract: this.deps.findingContract,
       workflowProvider: this.deps.workflowProvider,
       workflowModel: this.deps.workflowModel,
-      ledgerStore: this.deps.findingLedgerStore,
+      cwd: this.deps.getCwd(),
+      ledgerStore,
       optionsBuilder: this.deps.optionsBuilder,
       stepExecutor: this.deps.stepExecutor,
       parentStep: step,
       stepIteration,
       subResults,
-      workflowName: this.deps.getWorkflowName(),
+      // 台帳の workflowName スタンプは店（ledgerStore）が束縛する正準名を使う。
+      // workflow_call の子が親の台帳を継承した場合、この engine 自身の
+      // getWorkflowName()（子のワークフロー名）を使うと reconcile 後の
+      // ledger.workflowName が親の台帳と食い違い、次回 load/save で
+      // assertLedgerWorkflowName が例外を投げる。
+      workflowName: ledgerStore.workflowName,
       runId: this.deps.getRunId(),
+      callNamespace: this.deps.getFindingCallNamespace(),
       timestamp: new Date().toISOString(),
       ledgerCopyPath,
       priorStepResponseText,
-      autoRouting: this.deps.engineOptions.autoRouting,
-      routeWithAi: this.deps.engineOptions.autoRoutingAiRouter?.routeStep,
-      abortSignal: this.deps.engineOptions.abortSignal,
-      onManagerAttemptUsage: (managerStep, providerInfo, success, usage) => {
-        recordDelegatedAgentUsage(
-          this.deps.engineOptions,
-          managerStep.name,
-          'parallel',
-          providerInfo,
-          success,
-          usage,
-        );
-      },
+      refreshFindingsState: this.deps.refreshFindingsState,
+      emitEvent: this.deps.emitEvent,
     });
-    if (result.status === 'updated') {
-      this.deps.refreshFindingsState();
-      this.deps.emitEvent('findings:ledger', result.ledger);
-    }
-    return result;
   }
 
   private emitSubStepRoutingDecisionEvents(subResults: ParallelSubStepResult[], iteration: number): void {
@@ -994,60 +1057,6 @@ export class ParallelRunner {
       response.providerUsage,
     );
     return response;
-  }
-
-  private prepareFindingContractLedgerCopy(): string | undefined {
-    if (!this.deps.findingContract) {
-      return undefined;
-    }
-    if (!this.deps.findingLedgerStore) {
-      throw new Error('Finding contract is configured but finding ledger store is not available');
-    }
-    return this.deps.findingLedgerStore.createRunCopy();
-  }
-
-  private ledgerHasOpenFindings(): boolean {
-    if (!this.deps.findingLedgerStore) {
-      return false;
-    }
-    return ledgerHasOpenFindings(this.deps.findingLedgerStore.loadLedger());
-  }
-
-  private ledgerHasWaivedFindings(): boolean {
-    if (!this.deps.findingLedgerStore) {
-      return false;
-    }
-    return ledgerHasWaivedFindings(this.deps.findingLedgerStore.loadLedger());
-  }
-
-  private renderFindingLedgerSummary(): string {
-    if (!this.deps.findingLedgerStore) {
-      throw new Error('Finding contract is configured but finding ledger store is not available');
-    }
-    return renderFindingLedgerInstructionSummary(this.deps.findingLedgerStore.loadLedger());
-  }
-
-  private renderFindingLedgerReportSummary(): string {
-    if (!this.deps.findingLedgerStore) {
-      throw new Error('Finding contract is configured but finding ledger store is not available');
-    }
-    return renderFindingLedgerReportSummary(this.deps.findingLedgerStore.loadLedger());
-  }
-
-  private withFindingContractStructuredOutput(
-    subStep: AgentWorkflowStep,
-    ledgerCopyPath: string | undefined,
-  ): AgentWorkflowStep {
-    if (!ledgerCopyPath) {
-      return subStep;
-    }
-    if (subStep.structuredOutput) {
-      throw new Error(`Step "${subStep.name}" cannot combine finding_contract raw findings with structured_output`);
-    }
-    return {
-      ...subStep,
-      structuredOutput: RawFindingsStructuredOutput,
-    };
   }
 
   private buildParallelLoggerOptions(
@@ -1124,74 +1133,6 @@ export class ParallelRunner {
         ...options.subResults.map((result) => result.subStep.name),
       ],
     };
-  }
-
-  private createFindingManagerInvalidOutputResult(options: {
-    step: WorkflowStep;
-    state: WorkflowState;
-    stepIteration: number;
-    subResults: ParallelSubStepResult[];
-    managerResult: Extract<FindingManagerRunResult, { status: 'invalid_manager_output' }>;
-    providerInfo: StepRunResult['providerInfo'];
-  }): StepRunResult {
-    const content = [
-      `Finding manager output remained semantically invalid after ${options.managerResult.retryCount} retry.`,
-      '',
-      'Validation errors:',
-      ...options.managerResult.errors.map((error) => `- ${error}`),
-      '',
-      `Validation report: ${options.managerResult.reportPath}`,
-      'Ledger was not updated.',
-    ].join('\n');
-
-    const matchedRuleIndex = this.selectInvalidManagerOutputRuleIndex(options.step);
-    const response: AgentResponse = {
-      persona: options.step.name,
-      status: 'done',
-      content,
-      timestamp: new Date(),
-      ...(matchedRuleIndex !== undefined ? { matchedRuleIndex, matchedRuleMethod: 'auto_select' } : {}),
-    };
-
-    options.state.stepOutputs.set(options.step.name, response);
-    options.state.lastOutput = response;
-    this.deps.stepExecutor.persistPreviousResponseSnapshot(
-      options.state,
-      options.step.name,
-      options.stepIteration,
-      response.content,
-    );
-    this.deps.stepExecutor.emitStepReports(options.step);
-
-    return {
-      response,
-      instruction: options.subResults.map((result) => result.instruction).join('\n\n'),
-      providerInfo: options.providerInfo,
-    };
-  }
-
-  private selectInvalidManagerOutputRuleIndex(step: WorkflowStep): number {
-    const rules = step.rules;
-    if (!rules) {
-      throw new Error(`Invalid finding_contract step "${step.name}": missing invalid manager output rule`);
-    }
-
-    const needReplanIndex = rules.findIndex((rule) => isNonAiReturnValueRule(rule, 'need_replan'));
-    if (needReplanIndex >= 0) {
-      return needReplanIndex;
-    }
-
-    const needsFixIndex = rules.findIndex((rule) => isNonAiReturnValueRule(rule, 'needs_fix'));
-    if (needsFixIndex >= 0) {
-      return needsFixIndex;
-    }
-
-    const fixIndex = rules.findIndex((rule) => !rule.isAiCondition && rule.next === 'fix');
-    if (fixIndex >= 0) {
-      return fixIndex;
-    }
-
-    throw new Error(`Invalid finding_contract step "${step.name}": missing invalid manager output rule`);
   }
 
   private collectTerminalResults(results: ParallelSubStepResult[]): ParallelSubStepResult[] {

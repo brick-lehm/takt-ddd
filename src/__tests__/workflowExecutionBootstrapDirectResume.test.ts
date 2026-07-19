@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowConfig } from '../core/models/index.js';
 import { attachWorkflowOpaqueRef } from '../infra/config/loaders/workflowSourceMetadata.js';
+
+const TEST_TMPDIR = realpathSync(tmpdir());
 
 const {
   mockWriteFileAtomic,
@@ -178,9 +180,16 @@ function createAutoRoutingConfig(): NonNullable<WorkflowConfig['autoRouting']> {
 const temporaryDirs: string[] = [];
 
 function createTempProject(): string {
-  const projectDir = mkdtempSync(join(tmpdir(), 'takt-direct-resume-'));
+  const projectDir = mkdtempSync(join(TEST_TMPDIR, 'takt-direct-resume-'));
   temporaryDirs.push(projectDir);
   return projectDir;
+}
+
+function seedResumeSourceRun(projectDir: string): void {
+  mkdirSync(
+    join(projectDir, '.takt', 'runs', '20260524-source-run', 'reports'),
+    { recursive: true },
+  );
 }
 
 function hasTasksYamlWrite(): boolean {
@@ -806,8 +815,11 @@ describe('createWorkflowExecutionBootstrap direct resume metadata', () => {
   });
 
   it('Given directResume is passed, When bootstrap creates run meta, Then source metadata is persisted in meta.json', async () => {
-    await createWorkflowExecutionBootstrap(workflowConfig, 'Resume direct run', '/project', {
-      projectCwd: '/project',
+    const projectDir = createTempProject();
+    seedResumeSourceRun(projectDir);
+
+    await createWorkflowExecutionBootstrap(workflowConfig, 'Resume direct run', projectDir, {
+      projectCwd: projectDir,
       provider: 'mock',
       reportDirName: 'direct-resume',
       directResume: {
@@ -817,7 +829,7 @@ describe('createWorkflowExecutionBootstrap direct resume metadata', () => {
     });
 
     const metaWrite = mockWriteFileAtomic.mock.calls.find((call) =>
-      call[0] === '/project/.takt/runs/direct-resume/meta.json'
+      call[0] === join(projectDir, '.takt', 'runs', 'direct-resume', 'meta.json')
     );
     expect(metaWrite).toBeDefined();
     const meta = JSON.parse(String(metaWrite![1])) as {
@@ -830,6 +842,7 @@ describe('createWorkflowExecutionBootstrap direct resume metadata', () => {
 
   it('Given no tasks.yaml exists, When direct resume bootstrap runs, Then tasks.yaml is not created', async () => {
     const projectDir = createTempProject();
+    seedResumeSourceRun(projectDir);
 
     await createWorkflowExecutionBootstrap(workflowConfig, 'Resume direct run', projectDir, {
       projectCwd: projectDir,
@@ -852,6 +865,7 @@ describe('createWorkflowExecutionBootstrap direct resume metadata', () => {
     const initialTasks = 'tasks:\n  - name: keep-existing\n    status: pending\n';
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(tasksPath, initialTasks, 'utf-8');
+    seedResumeSourceRun(projectDir);
 
     await createWorkflowExecutionBootstrap(workflowConfig, 'Resume direct run', projectDir, {
       projectCwd: projectDir,

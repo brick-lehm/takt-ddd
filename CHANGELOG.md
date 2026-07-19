@@ -51,6 +51,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `implement` dead ends now route to `plan` (re-planning) instead of ABORT in the `for-local-llm` family (#1009), matching what `write_tests` and `fix` already did. ABORT remains reserved for loop-monitor verdicts, unclear requirements, and review conflicts.
 - Bundled SDKs updated: `@openai/codex-sdk` 0.144.1 and `@anthropic-ai/claude-agent-sdk` 0.3.206 (#1015). The bundled Codex CLI now knows the GPT-5.6 model family (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), so these can be specified as `model` on the codex provider.
 
+### Removed
+
+- `takt-default-refresh-all` and `takt-default-refresh-fast` were removed. Use `takt-default` or `takt-default-high` instead. Saved tasks or runs that reference either removed workflow must switch workflows before retrying or resuming, or be recreated.
+
 ### Fixed
 
 - `takt_providers.assistant` now applies to instruct and retry dialogue, not only interactive planning (#1011).

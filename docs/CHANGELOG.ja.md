@@ -51,6 +51,10 @@
 - `for-local-llm` ファミリーで `implement` の行き詰まりを ABORT ではなく `plan`（再計画）へ流すようにしました (#1009)。`write_tests` と `fix` の既存挙動に揃えたものです。ABORT はループモニターの裁定・要件不明確・レビュー対立に限定されます。
 - 同梱 SDK を更新: `@openai/codex-sdk` 0.144.1 / `@anthropic-ai/claude-agent-sdk` 0.3.206 (#1015)。同梱の Codex CLI が GPT-5.6 モデルファミリー（`gpt-5.6-sol`・`gpt-5.6-terra`・`gpt-5.6-luna`）を認識するようになり、codex プロバイダの `model` に指定できます。
 
+### Removed
+
+- `takt-default-refresh-all` と `takt-default-refresh-fast` を削除しました。代わりに `takt-default` または `takt-default-high` を使用してください。削除済み workflow を参照する保存済み task/run は、再試行または resume の前に workflow を切り替えるか、再作成が必要です。
+
 ### Fixed
 
 - `takt_providers.assistant` が `instruct` / `retry` 対話にも適用されるよう修正（従来はインタラクティブ計画会話のみ）(#1011)。

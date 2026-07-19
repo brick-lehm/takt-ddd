@@ -3,6 +3,7 @@ import type { StructuredCaller } from '../../../agents/structured-caller.js';
 import { createLogger } from '../../../shared/utils/index.js';
 import type {
   AgentResponse,
+  FindingContractConfig,
   WorkflowConfig,
   WorkflowMaxSteps,
   WorkflowResumePoint,
@@ -26,6 +27,7 @@ import { runQualityGates } from '../quality-gates/qualityGateRunner.js';
 import type { FindingLedgerStore } from '../findings/store.js';
 import { RawFindingsStructuredOutput } from '../findings/manager-runner.js';
 import { ledgerHasOpenFindings, ledgerHasWaivedFindings, renderFindingLedgerInstructionSummary, renderFindingLedgerReportSummary } from '../findings/context.js';
+import { computeReviewScopeSnapshotId } from '../findings/snapshot.js';
 import type { FindingContractInstructionContext } from '../instruction/instruction-context.js';
 
 const log = createLogger('workflow-engine');
@@ -50,6 +52,8 @@ interface WorkflowEngineSetupParams {
   updateMaxSteps: (maxSteps: WorkflowMaxSteps) => void;
   setActiveResumePoint: (step: WorkflowStep, iteration: number) => void;
   refreshFindingsState: () => void;
+  /** 自前 or workflow_call 親から継承した、この engine で有効な Finding Contract。 */
+  findingContract?: FindingContractConfig;
   findingLedgerStore?: FindingLedgerStore;
   updatePersonaSession: (persona: string, sessionId: string | undefined) => void;
   resolveNextStepFromDone: (step: WorkflowStep, response: AgentResponse) => string;
@@ -137,7 +141,7 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
     _step: WorkflowStep,
     includeRawFindingsSchema: boolean,
   ): FindingContractInstructionContext | undefined => {
-    if (!params.config.findingContract) {
+    if (!params.findingContract) {
       return undefined;
     }
     if (!params.findingLedgerStore) {
@@ -154,6 +158,12 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
       ...(includeRawFindingsSchema
         ? {
             rawFindingsJsonSchema: RawFindingsStructuredOutput.schema,
+            // review-integrity protocol: このラウンドの reviewer 全員へ同じ snapshot id を
+            // 配る。manager-runner.ts の runFindingManagerForStep が同じ cwd に
+            // 対して同じ関数をもう一度呼び、reviewer 呼び出しと検証呼び出しの
+            // 間に書き込みが起きない通常経路では同じ値になる（値の一致で
+            // 「reviewer が見た版のまま」を確認する — snapshot.ts 参照）。
+            reviewScopeSnapshotId: computeReviewScopeSnapshotId(params.getCwd()),
           }
         : {}),
     };
@@ -193,6 +203,14 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
     detectRuleIndex: params.detectRuleIndex,
     structuredCaller: params.structuredCaller,
     structuredOutputNormalizers: params.options.structuredOutputNormalizers,
+    findingContract: params.findingContract,
+    workflowProvider: params.config.provider,
+    workflowModel: params.config.model,
+    findingLedgerStore: params.findingLedgerStore,
+    refreshFindingsState: params.refreshFindingsState,
+    emitEvent: params.emitEvent,
+    getRunId: () => params.runPaths.slug,
+    getFindingCallNamespace: () => params.options.findingCallNamespace ?? '',
     ...phaseRelay,
   });
 
@@ -212,6 +230,9 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
     emit: params.emitEvent,
     resolveWorkflowCall: (request) => params.options.workflowCallResolver!(request),
     createEngine: params.createEngine,
+    findingContract: params.findingContract,
+    findingLedgerStore: params.findingLedgerStore,
+    refreshFindingsState: params.refreshFindingsState,
   });
 
   const parallelRunner = new ParallelRunner({
@@ -230,7 +251,7 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
     structuredCaller: params.structuredCaller,
     refreshFindingsState: params.refreshFindingsState,
     emitEvent: params.emitEvent,
-    findingContract: params.config.findingContract,
+    findingContract: params.findingContract,
     workflowProvider: params.config.provider,
     workflowModel: params.config.model,
     findingLedgerStore: params.findingLedgerStore,
@@ -238,6 +259,7 @@ export function createWorkflowEngineServices(params: WorkflowEngineSetupParams):
     updateMaxSteps: params.updateMaxSteps,
     setActiveResumePoint: params.setActiveResumePoint,
     getRunId: () => params.runPaths.slug,
+    getFindingCallNamespace: () => params.options.findingCallNamespace ?? '',
     runQualityGates,
     ...phaseRelay,
   });
